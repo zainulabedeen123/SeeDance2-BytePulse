@@ -149,8 +149,14 @@ function renderApp(): void {
 
       <div class="row">
         <label class="field grow">
-          <span>Image reference URL <em>(optional · image-to-video)</em></span>
-          <input id="imageUrl" type="url" placeholder="https://…/first-frame.png" />
+          <span>Image reference <em>(optional · image-to-video)</em> — paste a URL or upload a file</span>
+          <div class="imgref">
+            <input id="imageUrl" type="url" placeholder="https://…/first-frame.png" />
+            <input id="imageFile" type="file" accept="image/png,image/jpeg,image/webp,image/bmp,image/tiff,image/gif,image/heic,image/heif" hidden />
+            <button type="button" id="uploadBtn" class="ghost">⬆ Upload</button>
+            <button type="button" id="clearImgBtn" class="ghost sm" title="Clear">✕</button>
+          </div>
+          <small id="imgHint" class="muted">Accepts URL or local image (sent as base64).</small>
         </label>
         <label class="field">
           <span>Ref role</span>
@@ -554,11 +560,46 @@ function wireActions(): void {
     ($("#prompt") as HTMLTextAreaElement).value = p;
   });
   $("#refreshTasksBtn").addEventListener("click", loadRemoteTasks);
+  wireImageUpload();
 
   ($("#model") as HTMLInputElement).value = load(
     LS.model,
     ENV_MODEL || MODELS[0].id,
   );
+}
+
+/** Local image upload → base64 data URI (ModelArk accepts data: in image_url.url). */
+function wireImageUpload(): void {
+  const urlInput = $("#imageUrl") as HTMLInputElement;
+  const fileInput = $("#imageFile") as HTMLInputElement;
+  const hint = $("#imgHint");
+  const pick = () => fileInput.click();
+
+  $("#uploadBtn").addEventListener("click", pick);
+  urlInput.addEventListener("dblclick", pick);
+
+  fileInput.addEventListener("change", () => {
+    const file = fileInput.files?.[0];
+    if (!file) return;
+    if (!/^image\//.test(file.type)) {
+      toast("Please choose an image file.");
+      return;
+    }
+    const reader = new FileReader();
+    reader.onload = () => {
+      urlInput.value = String(reader.result);
+      hint.textContent = `Loaded ${file.name} (${Math.round(file.size / 1024)} KB) as base64.`;
+      toast("Image ready — sent as base64.");
+    };
+    reader.onerror = () => toast("Could not read the image file.");
+    reader.readAsDataURL(file);
+  });
+
+  $("#clearImgBtn").addEventListener("click", () => {
+    urlInput.value = "";
+    fileInput.value = "";
+    hint.textContent = "Accepts URL or local image (sent as base64).";
+  });
 }
 
 function init(): void {

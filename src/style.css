@@ -72,6 +72,9 @@ input:focus, select:focus, textarea:focus {
 textarea { resize: vertical; }
 
 .toggles { align-items: center; }
+.imgref { display: flex; gap: 8px; align-items: stretch; }
+.imgref input { flex: 1 1 auto; }
+.imgref button { flex: 0 0 auto; }
 .check { display: inline-flex; align-items: center; gap: 8px; color: var(--text); font-size: 13px; cursor: pointer; }
 .check input { width: auto; }
 
