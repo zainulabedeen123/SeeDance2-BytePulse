@@ -144,6 +144,8 @@ dialog.settings {
 }
 dialog.settings::backdrop { background: rgba(0,0,0,.55); backdrop-filter: blur(2px); }
 dialog.settings h3 { margin: 0 0 14px; }
+.settings-h4 { margin: 6px 0 8px; font-size: 13px; text-transform: uppercase; letter-spacing: .06em; color: var(--muted); }
+.sep { border: none; border-top: 1px solid var(--border); margin: 14px 0; }
 .warn { color: var(--run); font-size: 12px; }
 
 .toast {

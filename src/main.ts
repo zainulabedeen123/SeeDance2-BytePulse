@@ -9,6 +9,14 @@ import {
   type TaskStatus,
   type TaskUsage,
 } from "./api.ts";
+import {
+  configureFal,
+  planFalRequest,
+  runFal,
+  falEndpointLabel,
+  type FalParams,
+  type FalProvider,
+} from "./fal.ts";
 
 /**
  * SeeDance 2.0 video generation tool (BytePlus ModelArk).
@@ -22,13 +30,27 @@ const ENV = import.meta.env;
 const ENV_API_KEY = ENV.VITE_ARK_API_KEY ?? "";
 const ENV_BASE_URL = ENV.VITE_ARK_BASE_URL ?? DEFAULT_BASE_URL;
 const ENV_MODEL = ENV.VITE_ARK_MODEL ?? "";
+const ENV_FAL_KEY = ENV.VITE_FAL_KEY ?? "";
 
 const LS = {
   apiKey: "seedance.apiKey",
   baseUrl: "seedance.baseUrl",
   model: "seedance.model",
   pricePerMillion: "seedance.pricePerMillion",
+  provider: "seedance.provider",
+  falKey: "seedance.falKey",
+  falModel: "seedance.falModel",
 };
+
+const PROVIDERS: { id: FalProvider; label: string }[] = [
+  { id: "byteplus", label: "BytePlus ModelArk" },
+  { id: "fal", label: "fal.ai" },
+];
+
+/** fal.ai models. Seedance 2.0 only for now; more can be added later. */
+const FAL_MODELS: { id: string; label: string }[] = [
+  { id: "seedance-2-0", label: "Seedance 2.0" },
+];
 
 /**
  * BytePlus ModelArk bills Seedance by token, not by second (see ModelArk
@@ -157,22 +179,23 @@ function renderApp(): void {
       </label>
 
       <div class="row">
-        <label class="field grow">
+        <label class="field">
+          <span>Provider</span>
+          <select id="provider">
+            ${PROVIDERS.map((p) => `<option value="${p.id}">${p.label}</option>`).join("")}
+          </select>
+        </label>
+        <label class="field grow" id="modelBlock">
           <span>Model ID</span>
           <input id="model" type="text" list="modelList" placeholder="seedance-2-0-pro-260615" />
           <datalist id="modelList">
             ${MODELS.map((m) => `<option value="${m.id}">${m.label}</option>`).join("")}
           </datalist>
         </label>
-        <label class="field">
-          <span>Aspect ratio</span>
-          <select id="aspectRatio">
-            <option value="16:9">16:9</option>
-            <option value="9:16">9:16</option>
-            <option value="1:1">1:1</option>
-            <option value="4:3">4:3</option>
-            <option value="3:4">3:4</option>
-            <option value="21:9">21:9</option>
+        <label class="field grow" id="falModelBlock" hidden>
+          <span>Model</span>
+          <select id="falModel">
+            ${FAL_MODELS.map((m) => `<option value="${m.id}">${m.label}</option>`).join("")}
           </select>
         </label>
       </div>
@@ -180,28 +203,41 @@ function renderApp(): void {
       <div class="row">
         <label class="field">
           <span>Resolution</span>
-          <select id="resolution">
-            <option value="480p">480p</option>
-            <option value="720p">720p</option>
-            <option value="1080p" selected>1080p</option>
-          </select>
+          <select id="resolution"></select>
         </label>
         <label class="field">
-          <span>Duration (s)</span>
-          <select id="duration">
-            <option value="5" selected>5</option>
-            <option value="10">10</option>
-          </select>
+          <span>Duration</span>
+          <select id="duration"></select>
         </label>
+        <label class="field">
+          <span>Aspect ratio</span>
+          <select id="aspectRatio"></select>
+        </label>
+      </div>
+
+      <div class="row" id="byteplusOpts">
         <label class="field">
           <span>Seed</span>
           <input id="seed" type="number" placeholder="random" />
         </label>
+        <label class="check"><input id="camerafixed" type="checkbox" /> Fixed camera</label>
+        <label class="check"><input id="watermark" type="checkbox" /> Watermark</label>
+      </div>
+
+      <div class="row" id="falOpts" hidden>
+        <label class="field">
+          <span>Bitrate mode</span>
+          <select id="bitrateMode">
+            <option value="standard">standard</option>
+            <option value="high">high</option>
+          </select>
+        </label>
+        <label class="check"><input id="generateAudio" type="checkbox" checked /> Generate audio</label>
       </div>
 
       <div class="row">
         <div class="field grow" style="flex-basis: 100%;">
-          <span>Reference images <em>(optional · image-to-video, multiple supported)</em></span>
+          <span>Reference images <em>(optional · drives text / image / reference-to-video)</em></span>
           <div class="imgref">
             <input id="imageUrl" type="url" placeholder="Paste image URL, then click Add…" />
             <button type="button" id="addUrlBtn" class="ghost">＋ Add</button>
@@ -211,11 +247,6 @@ function renderApp(): void {
           <small id="imgHint" class="muted">No reference images yet. Add via URL or upload (multiple supported).</small>
           <div id="imgList" class="imglist"></div>
         </div>
-      </div>
-
-      <div class="row toggles">
-        <label class="check"><input id="camerafixed" type="checkbox" /> Fixed camera</label>
-        <label class="check"><input id="watermark" type="checkbox" /> Watermark</label>
       </div>
 
       <div class="row actions">
@@ -261,7 +292,15 @@ function renderApp(): void {
       </label>
       <div class="presets" id="pricePresets"></div>
       <p class="muted small">Cost is estimated from each task's token usage × this rate (BytePlus ModelArk resource-pack pricing: Seedance 2.0 = $4.30/M, fast = $3.30/M). The API returns token counts, not a currency amount.</p>
-      <p class="warn">The key is stored only in this browser's localStorage. For production, route requests through a backend.</p>
+
+      <hr class="sep" />
+      <h4 class="settings-h4">fal.ai</h4>
+      <label class="field">
+        <span>fal.ai API key <em>(for Seedance 2.0 via fal.ai)</em></span>
+        <input id="falKeyInput" type="password" placeholder="fal-… or UUID:UUID" autocomplete="off" />
+      </label>
+      <p class="muted small">Used when Provider = fal.ai. Set <code>VITE_FAL_KEY</code> to ship a default key with the build.</p>
+      <p class="warn">Keys are stored only in this browser's localStorage and called client-side. For production, route requests through a backend so keys never ship to end users.</p>
       <div class="row actions">
         <button type="button" id="clearKeyBtn" class="ghost">Clear key</button>
         <button type="submit" class="primary">Save</button>
@@ -288,11 +327,57 @@ function getClient(): ModelArkClient | null {
   });
 }
 
+const PROVIDER_OPTS: Record<
+  FalProvider,
+  { resolution: readonly string[]; duration: readonly string[]; aspect: readonly string[] }
+> = {
+  byteplus: {
+    resolution: ["480p", "720p", "1080p"],
+    duration: ["5", "10"],
+    aspect: ["16:9", "9:16", "1:1", "4:3", "3:4", "21:9"],
+  },
+  fal: {
+    resolution: ["480p", "720p", "1080p", "4k"],
+    duration: ["auto", "4", "5", "6", "7", "8", "9", "10", "11", "12", "13", "14", "15"],
+    aspect: ["auto", "21:9", "16:9", "4:3", "1:1", "3:4", "9:16"],
+  },
+};
+
+function getProvider(): FalProvider {
+  return load(LS.provider, "byteplus") === "fal" ? "fal" : "byteplus";
+}
+
+function setSelectOptions(sel: HTMLSelectElement, options: readonly string[]): void {
+  const prev = sel.value;
+  sel.innerHTML = options.map((o) => `<option value="${o}">${o}</option>`).join("");
+  if (options.includes(prev)) sel.value = prev;
+}
+
+/** Toggle model fields + per-provider option rows + repopulate shared selects. */
+function applyProvider(provider: FalProvider): void {
+  const isFal = provider === "fal";
+  ($("#provider") as HTMLSelectElement).value = provider;
+  ($("#modelBlock") as HTMLElement).hidden = isFal;
+  ($("#falModelBlock") as HTMLElement).hidden = !isFal;
+  ($("#byteplusOpts") as HTMLElement).hidden = isFal;
+  ($("#falOpts") as HTMLElement).hidden = !isFal;
+
+  const opts = PROVIDER_OPTS[provider];
+  setSelectOptions($("#resolution") as HTMLSelectElement, opts.resolution);
+  setSelectOptions($("#duration") as HTMLSelectElement, opts.duration);
+  setSelectOptions($("#aspectRatio") as HTMLSelectElement, opts.aspect);
+
+  updateConnStatus();
+}
+
 function updateConnStatus(): void {
   const el = $("#connStatus");
-  const hasKey = !!(load(LS.apiKey, ENV_API_KEY));
-  el.textContent = hasKey ? "ready" : "not configured";
-  el.className = `badge ${hasKey ? "ok" : "idle"}`;
+  const ready =
+    getProvider() === "fal"
+      ? !!(load(LS.falKey, ENV_FAL_KEY))
+      : !!(load(LS.apiKey, ENV_API_KEY));
+  el.textContent = ready ? "ready" : "not configured";
+  el.className = `badge ${ready ? "ok" : "idle"}`;
 }
 
 function toast(msg: string): void {
@@ -317,9 +402,11 @@ function wireSettings(): void {
   const keyInput = $("#apiKeyInput") as HTMLInputElement;
   const urlInput = $("#baseUrlInput") as HTMLInputElement;
   const priceInput = $("#priceInput") as HTMLInputElement;
+  const falKeyInput = $("#falKeyInput") as HTMLInputElement;
   keyInput.value = load(LS.apiKey, ENV_API_KEY);
   urlInput.value = load(LS.baseUrl, ENV_BASE_URL);
   priceInput.value = String(getPricePerMillion());
+  falKeyInput.value = load(LS.falKey, ENV_FAL_KEY);
 
   const presetsEl = $("#pricePresets");
   presetsEl.innerHTML = PRICE_PRESETS.map(
@@ -345,9 +432,14 @@ function wireSettings(): void {
   urlInput.addEventListener("change", () => {
     save(LS.baseUrl, urlInput.value.trim() || DEFAULT_BASE_URL);
   });
+  falKeyInput.addEventListener("change", () => {
+    save(LS.falKey, falKeyInput.value.trim());
+    updateConnStatus();
+  });
   dialog.addEventListener("close", () => {
     save(LS.apiKey, keyInput.value.trim());
     save(LS.baseUrl, urlInput.value.trim() || DEFAULT_BASE_URL);
+    save(LS.falKey, falKeyInput.value.trim());
     savePrice();
     updateConnStatus();
     recalcAllCosts();
@@ -400,7 +492,22 @@ function buildContent(): ContentItem[] {
   return content;
 }
 
+function buildFalParams(): FalParams {
+  return {
+    resolution: ($("#resolution") as HTMLSelectElement).value,
+    duration: ($("#duration") as HTMLSelectElement).value,
+    aspect_ratio: ($("#aspectRatio") as HTMLSelectElement).value,
+    generate_audio: ($("#generateAudio") as HTMLInputElement).checked,
+    bitrate_mode: ($("#bitrateMode") as HTMLSelectElement).value as "standard" | "high",
+  };
+}
+
 async function generate(): Promise<void> {
+  if (getProvider() === "fal") return generateFal();
+  return generateByteplus();
+}
+
+async function generateByteplus(): Promise<void> {
   const client = getClient();
   if (!client) return;
 
@@ -442,6 +549,65 @@ async function generate(): Promise<void> {
   } catch (e) {
     handleError(e);
   } finally {
+    btn.disabled = false;
+    status.textContent = "";
+  }
+}
+
+async function generateFal(): Promise<void> {
+  const key = load(LS.falKey, ENV_FAL_KEY);
+  if (!key) {
+    toast("Add your fal.ai API key in Settings ⚙");
+    openSettings();
+    return;
+  }
+  configureFal(key);
+
+  const prompt = ($("#prompt") as HTMLTextAreaElement).value.trim();
+  if (!prompt) {
+    toast("Please enter a prompt.");
+    return;
+  }
+
+  const plan = planFalRequest(prompt, refImages, buildFalParams());
+  const label = falEndpointLabel(plan.endpoint);
+  const btn = $("#generateBtn") as HTMLButtonElement;
+  btn.disabled = true;
+  const status = $("#genStatus");
+  status.textContent = `fal.ai · ${label}: submitting…`;
+  setResultPlaceholder(`fal.ai · ${label} — submitting…`);
+
+  const stored: StoredTask = {
+    id: `fal-${Date.now()}`,
+    status: "queued",
+    model: `Seedance 2.0 · fal.ai (${label})`,
+    prompt,
+    createdAt: Date.now(),
+  };
+  renderHistoryUpsert(stored);
+
+  try {
+    const res = await runFal(plan, {
+      onStatus: (s) => {
+        const running = s !== "COMPLETED" && s !== "FAILED";
+        stored.status = running ? "running" : "succeeded";
+        status.textContent = `fal.ai: ${s || "working"}…`;
+        if (running) setProgress("running");
+        renderHistoryUpsert(stored);
+      },
+    });
+    stored.id = res.requestId;
+    stored.status = "succeeded";
+    stored.videoUrl = res.videoUrl;
+    renderVideo(res.videoUrl, stored);
+    toast("fal.ai video ready");
+  } catch (e) {
+    const msg = e instanceof Error ? e.message : String(e);
+    stored.status = "failed";
+    stored.error = msg;
+    renderError(msg);
+  } finally {
+    renderHistoryUpsert(stored);
     btn.disabled = false;
     status.textContent = "";
   }
@@ -687,6 +853,19 @@ function wireActions(): void {
     LS.model,
     ENV_MODEL || MODELS[0].id,
   );
+  ($("#falModel") as HTMLSelectElement).value = load(LS.falModel, FAL_MODELS[0].id);
+  ($("#falModel") as HTMLSelectElement).addEventListener("change", (e) => {
+    save(LS.falModel, (e.target as HTMLSelectElement).value);
+  });
+
+  const providerSel = $("#provider") as HTMLSelectElement;
+  providerSel.value = getProvider();
+  providerSel.addEventListener("change", (e) => {
+    const provider = (e.target as HTMLSelectElement).value as FalProvider;
+    save(LS.provider, provider);
+    applyProvider(provider);
+  });
+  applyProvider(getProvider());
 }
 
 /** Render the list of attached reference images (each with its own role + remove). */
