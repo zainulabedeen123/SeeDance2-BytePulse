@@ -24,11 +24,14 @@ export type TaskStatus =
 export interface ContentItem {
   type: "text" | "image_url";
   text?: string;
-  image_url?: {
-    url: string;
-    /** Seedance 2.0 reference role: first_frame | last_frame | reference_image */
-    role?: string;
-  };
+  image_url?: { url: string };
+  /**
+   * Seedance 2.0 reference role. This must be a TOP-LEVEL field on the content
+   * item (a sibling of `type`/`image_url`), NOT nested inside `image_url` — the
+   * API returns "role must be specified for image contents" otherwise.
+   * Values: first_frame | last_frame | reference_image.
+   */
+  role?: string;
 }
 
 /**

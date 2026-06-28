@@ -393,7 +393,8 @@ function buildContent(): ContentItem[] {
   for (const img of refImages) {
     content.push({
       type: "image_url",
-      image_url: { url: img.url, role: img.role },
+      image_url: { url: img.url },
+      role: img.role,
     });
   }
   return content;
