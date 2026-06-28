@@ -7,6 +7,7 @@ import {
   type ContentItem,
   type VideoTask,
   type TaskStatus,
+  type TaskUsage,
 } from "./api.ts";
 
 /**
@@ -26,7 +27,20 @@ const LS = {
   apiKey: "seedance.apiKey",
   baseUrl: "seedance.baseUrl",
   model: "seedance.model",
+  pricePerMillion: "seedance.pricePerMillion",
 };
+
+/**
+ * BytePlus ModelArk bills Seedance by token, not by second (see ModelArk
+ * resource-pack pricing). Seedance 2.0 standard = $4.30 / 1M tokens,
+ * Seedance 2.0 fast = $3.30 / 1M tokens. The rate is user-configurable below
+ * since the API returns token usage per task but no currency amount.
+ */
+const DEFAULT_PRICE_PER_MILLION = 4.3;
+const PRICE_PRESETS: { label: string; value: number }[] = [
+  { label: "Seedance 2.0 · $4.30 / 1M", value: 4.3 },
+  { label: "Seedance 2.0 fast · $3.30 / 1M", value: 3.3 },
+];
 
 const MODELS: { id: string; label: string }[] = [
   { id: "dreamina-seedance-2-0-260128", label: "Dreamina Seedance 2.0" },
@@ -42,7 +56,45 @@ type StoredTask = {
   videoUrl?: string;
   createdAt: number;
   error?: string;
+  tokens?: number;
+  cost?: number;
 };
+
+function asNum(v: unknown): number {
+  return typeof v === "number" && Number.isFinite(v) ? v : 0;
+}
+
+/** Total billed tokens for a task (prefers total_tokens, falls back to parts). */
+function extractTokens(task: VideoTask): number | undefined {
+  const u = task.usage as TaskUsage | undefined;
+  if (!u) return undefined;
+  const total =
+    asNum(u.total_tokens) ||
+    asNum(u.prompt_tokens) + asNum(u.completion_tokens) ||
+    asNum(u.completion_tokens);
+  return total || undefined;
+}
+
+function getPricePerMillion(): number {
+  const v = parseFloat(load(LS.pricePerMillion, String(DEFAULT_PRICE_PER_MILLION)));
+  return Number.isFinite(v) && v >= 0 ? v : DEFAULT_PRICE_PER_MILLION;
+}
+
+function calcCost(tokens: number, perMillion: number): number {
+  return (tokens / 1_000_000) * perMillion;
+}
+
+function fmtCost(cost: number): string {
+  if (cost <= 0) return "$0.00";
+  if (cost < 0.01) return "< $0.01";
+  return `$${cost.toFixed(2)}`;
+}
+
+function fmtTokens(n: number): string {
+  if (n >= 1_000_000) return `${(n / 1_000_000).toFixed(2)}M`;
+  if (n >= 1000) return `${(n / 1000).toFixed(1)}k`;
+  return String(n);
+}
 
 function load(key: string, fallback = ""): string {
   return localStorage.getItem(key) ?? fallback;
@@ -183,7 +235,10 @@ function renderApp(): void {
     <section class="panel history">
       <div class="history-head">
         <h2>Tasks</h2>
-        <button id="refreshTasksBtn" class="ghost sm">↻ Refresh</button>
+        <div class="history-head-actions">
+          <span id="totalCost" class="cost-total" title="Estimated total cost of listed tasks (tokens × price)">≈ —</span>
+          <button id="refreshTasksBtn" class="ghost sm">↻ Refresh</button>
+        </div>
       </div>
       <div id="historyList" class="history-list"></div>
     </section>
@@ -200,6 +255,12 @@ function renderApp(): void {
         <span>Base URL</span>
         <input id="baseUrlInput" type="url" />
       </label>
+      <label class="field">
+        <span>Cost estimate — price / 1M tokens (USD) <em>(Seedance is billed per token)</em></span>
+        <input id="priceInput" type="number" min="0" step="0.01" />
+      </label>
+      <div class="presets" id="pricePresets"></div>
+      <p class="muted small">Cost is estimated from each task's token usage × this rate (BytePlus ModelArk resource-pack pricing: Seedance 2.0 = $4.30/M, fast = $3.30/M). The API returns token counts, not a currency amount.</p>
       <p class="warn">The key is stored only in this browser's localStorage. For production, route requests through a backend.</p>
       <div class="row actions">
         <button type="button" id="clearKeyBtn" class="ghost">Clear key</button>
@@ -255,8 +316,27 @@ function wireSettings(): void {
 
   const keyInput = $("#apiKeyInput") as HTMLInputElement;
   const urlInput = $("#baseUrlInput") as HTMLInputElement;
+  const priceInput = $("#priceInput") as HTMLInputElement;
   keyInput.value = load(LS.apiKey, ENV_API_KEY);
   urlInput.value = load(LS.baseUrl, ENV_BASE_URL);
+  priceInput.value = String(getPricePerMillion());
+
+  const presetsEl = $("#pricePresets");
+  presetsEl.innerHTML = PRICE_PRESETS.map(
+    (p) => `<button type="button" class="ghost sm" data-price="${p.value}">${escapeHtml(p.label)}</button>`,
+  ).join("");
+  const savePrice = () => {
+    const v = parseFloat(priceInput.value);
+    save(LS.pricePerMillion, String(Number.isFinite(v) && v >= 0 ? v : DEFAULT_PRICE_PER_MILLION));
+  };
+  presetsEl.querySelectorAll<HTMLButtonElement>("button[data-price]").forEach((btn) => {
+    btn.addEventListener("click", () => {
+      priceInput.value = btn.dataset.price ?? "";
+      savePrice();
+    });
+  });
+
+  priceInput.addEventListener("change", savePrice);
 
   keyInput.addEventListener("change", () => {
     save(LS.apiKey, keyInput.value.trim());
@@ -268,7 +348,9 @@ function wireSettings(): void {
   dialog.addEventListener("close", () => {
     save(LS.apiKey, keyInput.value.trim());
     save(LS.baseUrl, urlInput.value.trim() || DEFAULT_BASE_URL);
+    savePrice();
     updateConnStatus();
+    recalcAllCosts();
   });
   $("#clearKeyBtn").addEventListener("click", () => {
     keyInput.value = "";
@@ -386,6 +468,11 @@ async function pollAndRender(
       onUpdate: onProgress,
     });
     stored.status = final.status;
+    const toks = extractTokens(final);
+    if (toks != null) {
+      stored.tokens = toks;
+      stored.cost = calcCost(toks, getPricePerMillion());
+    }
     if (final.status === "succeeded") {
       const url = extractVideoUrl(final);
       stored.videoUrl = url;
@@ -421,6 +508,8 @@ function renderVideo(url: string, stored: StoredTask): void {
     <div class="result-meta">
       <span>${statusBadge(stored.status)}</span>
       <span class="muted">${escapeHtml(stored.model)}</span>
+      ${stored.tokens ? `<span class="muted">${fmtTokens(stored.tokens)} tokens</span>` : ""}
+      ${stored.cost != null ? `<span class="badge cost">≈ ${fmtCost(stored.cost)}</span>` : ""}
       <a class="ghost sm" href="${escapeHtml(url)}" download target="_blank" rel="noopener">⬇ Download</a>
       <button class="ghost sm" id="copyUrlBtn" data-url="${escapeHtml(url)}">⧉ Copy URL</button>
     </div>`;
@@ -439,6 +528,22 @@ function setResultPlaceholder(msg: string): void {
 
 const history: StoredTask[] = [];
 
+/** Recompute every task's cost against the current price (e.g. after rate edit). */
+function recalcAllCosts(): void {
+  const rate = getPricePerMillion();
+  let changed = false;
+  for (const t of history) {
+    if (t.tokens != null) {
+      const c = calcCost(t.tokens, rate);
+      if (t.cost !== c) {
+        t.cost = c;
+        changed = true;
+      }
+    }
+  }
+  if (changed) renderHistory();
+}
+
 function renderHistoryUpsert(stored: StoredTask): void {
   const idx = history.findIndex((t) => t.id === stored.id);
   if (idx >= 0) history[idx] = stored;
@@ -448,6 +553,14 @@ function renderHistoryUpsert(stored: StoredTask): void {
 
 function renderHistory(): void {
   const list = $("#historyList");
+  const total = history.reduce((s, t) => s + (t.cost ?? 0), 0);
+  const counted = history.filter((t) => t.cost != null).length;
+  const totalEl = $("#totalCost");
+  if (totalEl) {
+    totalEl.textContent = counted
+      ? `≈ ${fmtCost(total)} (${counted} task${counted === 1 ? "" : "s"})`
+      : "≈ —";
+  }
   if (!history.length) {
     list.innerHTML = `<div class="placeholder sm">No tasks yet.</div>`;
     return;
@@ -459,6 +572,8 @@ function renderHistory(): void {
         <div class="task-top">
           ${statusBadge(t.status)}
           <span class="muted">${escapeHtml(t.model)}</span>
+          ${t.tokens ? `<span class="muted">${fmtTokens(t.tokens)} tok</span>` : ""}
+          ${t.cost != null ? `<span class="badge cost">≈ ${fmtCost(t.cost)}</span>` : ""}
           <span class="muted mono">${escapeHtml(t.id)}</span>
         </div>
         <div class="task-prompt">${escapeHtml(t.prompt || "(no prompt)")}</div>
@@ -490,6 +605,11 @@ async function refreshTask(id: string): Promise<void> {
   try {
     const task = await client.getVideoTask(id);
     t.status = task.status;
+    const toks = extractTokens(task);
+    if (toks != null) {
+      t.tokens = toks;
+      t.cost = calcCost(toks, getPricePerMillion());
+    }
     if (task.status === "succeeded") t.videoUrl = extractVideoUrl(task);
     if (task.status === "failed")
       t.error = (task.error as { message?: string } | undefined)?.message;
@@ -516,6 +636,11 @@ async function loadRemoteTasks(): Promise<void> {
         createdAt: t.created_at ? t.created_at * 1000 : Date.now(),
         videoUrl: extractVideoUrl(t),
       };
+      const toks = extractTokens(t);
+      if (toks != null) {
+        stored.tokens = toks;
+        stored.cost = calcCost(toks, getPricePerMillion());
+      }
       const idx = history.findIndex((x) => x.id === stored.id);
       if (idx >= 0) history[idx] = stored;
       else history.push(stored);

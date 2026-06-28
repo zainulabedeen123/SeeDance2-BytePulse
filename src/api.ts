@@ -45,6 +45,8 @@ export interface CreateTaskRequest {
 
 export interface TaskUsage {
   completion_tokens?: number;
+  prompt_tokens?: number;
+  total_tokens?: number;
   [key: string]: unknown;
 }
 
