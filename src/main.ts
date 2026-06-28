@@ -195,6 +195,7 @@ function renderApp(): void {
           <select id="falModel">
             <option value="seedance-2-0">Seedance 2.0</option>
             <option value="seedance-2-0-mini">Seedance 2.0 Mini</option>
+            <option value="happy-horse-v1.1">Alibaba Happy Horse 1.1</option>
           </select>
         </label>
       </div>
@@ -232,6 +233,7 @@ function renderApp(): void {
           </select>
         </label>
         <label class="check"><input id="generateAudio" type="checkbox" checked /> Generate audio</label>
+        <label class="check" id="safetyField"><input id="enableSafety" type="checkbox" checked /> Safety checker</label>
       </div>
 
       <div class="row">
@@ -367,13 +369,17 @@ function applyProvider(provider: FalProvider): void {
     const cfg = FAL_MODELS[modelId] ?? FAL_MODELS["seedance-2-0"];
     opts = {
       resolution: cfg.resolutions,
-      duration: ["auto", "4", "5", "6", "7", "8", "9", "10", "11", "12", "13", "14", "15"],
-      aspect: ["auto", "21:9", "16:9", "4:3", "1:1", "3:4", "9:16"],
+      duration: cfg.durations,
+      aspect: cfg.aspects,
     };
     ($("#bitrateField") as HTMLElement).hidden = !cfg.supportsBitrate;
+    ($("#generateAudio") as HTMLElement).hidden = !cfg.supportsAudio;
+    ($("#safetyField") as HTMLElement).hidden = !cfg.supportsSafetyChecker;
   } else {
     opts = PROVIDER_OPTS["byteplus"];
     ($("#bitrateField") as HTMLElement).hidden = true;
+    ($("#generateAudio") as HTMLElement).hidden = true;
+    ($("#safetyField") as HTMLElement).hidden = true;
   }
   setSelectOptions($("#resolution") as HTMLSelectElement, opts.resolution);
   setSelectOptions($("#duration") as HTMLSelectElement, opts.duration);
@@ -511,6 +517,7 @@ function buildFalParams(): FalParams {
     aspect_ratio: ($("#aspectRatio") as HTMLSelectElement).value,
     generate_audio: ($("#generateAudio") as HTMLInputElement).checked,
     bitrate_mode: ($("#bitrateMode") as HTMLSelectElement).value as "standard" | "high",
+    enable_safety_checker: ($("#enableSafety") as HTMLInputElement).checked,
   };
 }
 
@@ -576,14 +583,19 @@ async function generateFal(): Promise<void> {
   configureFal(key);
 
   const prompt = ($("#prompt") as HTMLTextAreaElement).value.trim();
-  if (!prompt) {
+  const falModelId = ($("#falModel") as HTMLSelectElement).value || "seedance-2-0";
+  const isHappyHorse = falModelId === "happy-horse-v1.1";
+  const promptRequired = !(isHappyHorse && refImages.length > 0);
+  if (!prompt && promptRequired) {
     toast("Please enter a prompt.");
     return;
   }
 
-  const falModelId = ($("#falModel") as HTMLSelectElement).value || "seedance-2-0";
   const plan = planFalRequest(prompt, refImages, buildFalParams(), falModelId);
-  const label = `Seedance 2.0${falModelId === "seedance-2-0-mini" ? " Mini" : ""} · ${falEndpointLabel(plan.endpoint)}`;
+  let modelLabel = "Seedance 2.0";
+  if (falModelId === "seedance-2-0-mini") modelLabel = "Seedance 2.0 Mini";
+  else if (isHappyHorse) modelLabel = "Alibaba Happy Horse 1.1";
+  const label = `${modelLabel} · ${falEndpointLabel(plan.endpoint)}`;
   const btn = $("#generateBtn") as HTMLButtonElement;
   btn.disabled = true;
   const status = $("#genStatus");

@@ -1,5 +1,5 @@
 /**
- * fal.ai integration for ByteDance Seedance 2.0 (full + Mini).
+ * fal.ai integration for ByteDance Seedance 2.0 / Mini and Alibaba Happy Horse 1.1.
  *
  * Each model exposes three endpoints, chosen from the references:
  *   - text-to-video      (no references)
@@ -21,11 +21,16 @@ export interface FalRefImage {
 
 export interface FalModelConfig {
   label: string;
-  /** URL prefix for the three endpoints, e.g. "bytedance/seedance-2.0" or "bytedance/seedance-2.0/mini" */
+  /** URL prefix for the three endpoints, e.g. "bytedance/seedance-2.0" */
   prefix: string;
-  /** Mini only supports 480p/720p and has no bitrate_mode */
-  supportsBitrate: boolean;
   resolutions: readonly string[];
+  durations: readonly string[];
+  aspects: readonly string[];
+  supportsBitrate: boolean;
+  supportsAudio: boolean;
+  supportsSafetyChecker: boolean;
+  imageToVideoInferAspect: boolean;
+  imageToVideoSupportsEndFrame: boolean;
 }
 
 export interface FalParams {
@@ -34,6 +39,7 @@ export interface FalParams {
   aspect_ratio: string;
   generate_audio: boolean;
   bitrate_mode: "standard" | "high";
+  enable_safety_checker: boolean;
 }
 
 export interface FalPlan {
@@ -42,24 +48,48 @@ export interface FalPlan {
 }
 
 /**
- * Available fal.ai Seedance 2.0 models. Add new entries here to extend.
+ * Available fal.ai video models. Add new entries here to extend.
  */
 export const FAL_MODELS: Record<string, FalModelConfig> = {
   "seedance-2-0": {
     label: "Seedance 2.0",
     prefix: "bytedance/seedance-2.0",
-    supportsBitrate: true,
     resolutions: ["480p", "720p", "1080p", "4k"],
+    durations: ["auto", "4", "5", "6", "7", "8", "9", "10", "11", "12", "13", "14", "15"],
+    aspects: ["auto", "21:9", "16:9", "4:3", "1:1", "3:4", "9:16"],
+    supportsBitrate: true,
+    supportsAudio: true,
+    supportsSafetyChecker: false,
+    imageToVideoInferAspect: false,
+    imageToVideoSupportsEndFrame: true,
   },
   "seedance-2-0-mini": {
     label: "Seedance 2.0 Mini",
     prefix: "bytedance/seedance-2.0/mini",
-    supportsBitrate: false,
     resolutions: ["480p", "720p"],
+    durations: ["auto", "4", "5", "6", "7", "8", "9", "10", "11", "12", "13", "14", "15"],
+    aspects: ["auto", "21:9", "16:9", "4:3", "1:1", "3:4", "9:16"],
+    supportsBitrate: false,
+    supportsAudio: true,
+    supportsSafetyChecker: false,
+    imageToVideoInferAspect: false,
+    imageToVideoSupportsEndFrame: true,
+  },
+  "happy-horse-v1.1": {
+    label: "Alibaba Happy Horse 1.1",
+    prefix: "alibaba/happy-horse/v1.1",
+    resolutions: ["720p", "1080p"],
+    durations: ["3", "4", "5", "6", "7", "8", "9", "10", "11", "12", "13", "14", "15"],
+    aspects: ["16:9", "9:16", "1:1", "4:3", "3:4", "21:9", "9:21", "5:4", "4:5"],
+    supportsBitrate: false,
+    supportsAudio: false,
+    supportsSafetyChecker: true,
+    imageToVideoInferAspect: true,
+    imageToVideoSupportsEndFrame: false,
   },
 };
 
-function resolveModel(modelId: string): FalModelConfig {
+export function resolveModel(modelId: string): FalModelConfig {
   return FAL_MODELS[modelId] ?? FAL_MODELS["seedance-2-0"];
 }
 
@@ -71,12 +101,18 @@ export function configureFal(credentials: string): void {
 export type FalEndpoint = "text" | "image" | "reference";
 
 function endpointFor(cfg: FalModelConfig, type: FalEndpoint): string {
-  return `${cfg.prefix}/${type === "text" ? "text-to-video" : type === "image" ? "image-to-video" : "reference-to-video"}`;
+  const suffix =
+    type === "text"
+      ? "text-to-video"
+      : type === "image"
+        ? "image-to-video"
+        : "reference-to-video";
+  return `${cfg.prefix}/${suffix}`;
 }
 
 /**
- * Pick the correct Seedance 2.0 / Mini endpoint and assemble its input from
- * the prompt, references and shared parameters. Image roles drive the choice:
+ * Pick the correct endpoint and assemble its input from the prompt,
+ * references and shared parameters. Image roles drive the endpoint choice:
  *   - no images                              -> text-to-video
  *   - only first/last frames (<=2)           -> image-to-video (start + optional end frame)
  *   - any reference images, or >2 images     -> reference-to-video
@@ -92,14 +128,14 @@ export function planFalRequest(
     prompt,
     resolution: p.resolution,
     duration: p.duration,
-    aspect_ratio: p.aspect_ratio,
-    generate_audio: p.generate_audio,
   };
-  if (cfg.supportsBitrate) {
-    base.bitrate_mode = p.bitrate_mode;
-  }
+
+  if (cfg.supportsAudio) base.generate_audio = p.generate_audio;
+  if (cfg.supportsBitrate) base.bitrate_mode = p.bitrate_mode;
+  if (cfg.supportsSafetyChecker) base.enable_safety_checker = p.enable_safety_checker;
 
   if (refs.length === 0) {
+    base.aspect_ratio = p.aspect_ratio;
     return { endpoint: endpointFor(cfg, "text"), input: base };
   }
 
@@ -114,14 +150,14 @@ export function planFalRequest(
       ...base,
       image_url: (first ?? refs[0]).url,
     };
-    if (last) input.end_image_url = last.url;
+    if (last && cfg.imageToVideoSupportsEndFrame) input.end_image_url = last.url;
+    if (!cfg.imageToVideoInferAspect) input.aspect_ratio = p.aspect_ratio;
     return { endpoint: endpointFor(cfg, "image"), input };
   }
 
-  return {
-    endpoint: endpointFor(cfg, "reference"),
-    input: { ...base, image_urls: refs.map((r) => r.url) },
-  };
+  base.image_urls = refs.map((r) => r.url);
+  base.aspect_ratio = p.aspect_ratio;
+  return { endpoint: endpointFor(cfg, "reference"), input: base };
 }
 
 export interface FalResult {
@@ -130,11 +166,6 @@ export interface FalResult {
   seed?: number;
 }
 
-/**
- * Submit + wait for a fal Seedance 2.0 / Mini request via the queue,
- * surfacing status updates. Returns the video URL and fal request id on
- * completion.
- */
 export async function runFal(
   plan: FalPlan,
   opts: {
@@ -161,7 +192,6 @@ export async function runFal(
   return { requestId: result.requestId, videoUrl, seed: data.seed };
 }
 
-/** Extract the endpoint suffix for display (e.g. "text-to-video"). */
 export function falEndpointLabel(endpoint: string): string {
   const parts = endpoint.split("/");
   return parts[parts.length - 1] ?? endpoint;
