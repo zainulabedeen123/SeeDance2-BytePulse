@@ -75,6 +75,11 @@ textarea { resize: vertical; }
 .imgref { display: flex; gap: 8px; align-items: stretch; }
 .imgref input { flex: 1 1 auto; }
 .imgref button { flex: 0 0 auto; }
+.imglist { display: grid; grid-template-columns: repeat(auto-fill, minmax(150px, 1fr)); gap: 10px; margin-top: 10px; }
+.imgcard { background: var(--bg-2); border: 1px solid var(--border); border-radius: 10px; padding: 8px; display: flex; flex-direction: column; gap: 8px; }
+.imgcard img { width: 100%; height: 88px; object-fit: cover; border-radius: 8px; background: #000; }
+.imgcard-fields { display: flex; gap: 6px; align-items: center; }
+.imgcard-fields select { flex: 1 1 auto; padding: 6px 8px; font-size: 12px; }
 .check { display: inline-flex; align-items: center; gap: 8px; color: var(--text); font-size: 13px; cursor: pointer; }
 .check input { width: auto; }
 

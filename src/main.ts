@@ -148,24 +148,17 @@ function renderApp(): void {
       </div>
 
       <div class="row">
-        <label class="field grow">
-          <span>Image reference <em>(optional · image-to-video)</em> — paste a URL or upload a file</span>
+        <div class="field grow" style="flex-basis: 100%;">
+          <span>Reference images <em>(optional · image-to-video, multiple supported)</em></span>
           <div class="imgref">
-            <input id="imageUrl" type="url" placeholder="https://…/first-frame.png" />
-            <input id="imageFile" type="file" accept="image/png,image/jpeg,image/webp,image/bmp,image/tiff,image/gif,image/heic,image/heif" hidden />
+            <input id="imageUrl" type="url" placeholder="Paste image URL, then click Add…" />
+            <button type="button" id="addUrlBtn" class="ghost">＋ Add</button>
+            <input id="imageFile" type="file" accept="image/png,image/jpeg,image/webp,image/bmp,image/tiff,image/gif,image/heic,image/heif" multiple hidden />
             <button type="button" id="uploadBtn" class="ghost">⬆ Upload</button>
-            <button type="button" id="clearImgBtn" class="ghost sm" title="Clear">✕</button>
           </div>
-          <small id="imgHint" class="muted">Accepts URL or local image (sent as base64).</small>
-        </label>
-        <label class="field">
-          <span>Ref role</span>
-          <select id="imageRole">
-            <option value="first_frame">first frame</option>
-            <option value="last_frame">last frame</option>
-            <option value="reference_image">reference</option>
-          </select>
-        </label>
+          <small id="imgHint" class="muted">No reference images yet. Add via URL or upload (multiple supported).</small>
+          <div id="imgList" class="imglist"></div>
+        </div>
       </div>
 
       <div class="row toggles">
@@ -308,15 +301,17 @@ function buildParameters(): Record<string, unknown> {
   return params;
 }
 
+type RefImage = { url: string; role: string; name?: string };
+const refImages: RefImage[] = [];
+
 function buildContent(): ContentItem[] {
   const content: ContentItem[] = [];
   const prompt = ($("#prompt") as HTMLTextAreaElement).value.trim();
   if (prompt) content.push({ type: "text", text: prompt });
-  const img = ($("#imageUrl") as HTMLInputElement).value.trim();
-  if (img) {
+  for (const img of refImages) {
     content.push({
       type: "image_url",
-      image_url: { url: img, role: ($("#imageRole") as HTMLSelectElement).value },
+      image_url: { url: img.url, role: img.role },
     });
   }
   return content;
@@ -568,38 +563,101 @@ function wireActions(): void {
   );
 }
 
-/** Local image upload → base64 data URI (ModelArk accepts data: in image_url.url). */
+/** Render the list of attached reference images (each with its own role + remove). */
+function renderImgList(): void {
+  const list = $("#imgList");
+  const hint = $("#imgHint");
+  if (!refImages.length) {
+    list.innerHTML = "";
+    hint.textContent = "No reference images yet. Add via URL or upload (multiple supported).";
+    return;
+  }
+  hint.textContent = `${refImages.length} reference image${refImages.length > 1 ? "s" : ""} attached.`;
+  list.innerHTML = refImages
+    .map(
+      (img, idx) => `
+      <div class="imgcard" data-idx="${idx}" title="${escapeHtml(img.name || img.url)}">
+        <img src="${escapeHtml(img.url)}" alt="reference" />
+        <div class="imgcard-fields">
+          <select class="img-role" aria-label="Reference role">
+            <option value="first_frame"${img.role === "first_frame" ? " selected" : ""}>first frame</option>
+            <option value="last_frame"${img.role === "last_frame" ? " selected" : ""}>last frame</option>
+            <option value="reference_image"${img.role === "reference_image" ? " selected" : ""}>reference</option>
+          </select>
+          <button type="button" class="ghost sm" data-act="remove" title="Remove">✕</button>
+        </div>
+      </div>`,
+    )
+    .join("");
+
+  list.querySelectorAll<HTMLElement>(".imgcard").forEach((node) => {
+    const idx = Number(node.dataset.idx);
+    node.querySelector<HTMLSelectElement>(".img-role")?.addEventListener("change", (e) => {
+      refImages[idx].role = (e.target as HTMLSelectElement).value;
+    });
+    node.querySelector<HTMLButtonElement>('[data-act="remove"]')?.addEventListener("click", () => {
+      refImages.splice(idx, 1);
+      renderImgList();
+    });
+  });
+}
+
+/** Multi-image references: add via URL or upload (multiple files), each with its own role. */
 function wireImageUpload(): void {
   const urlInput = $("#imageUrl") as HTMLInputElement;
   const fileInput = $("#imageFile") as HTMLInputElement;
-  const hint = $("#imgHint");
-  const pick = () => fileInput.click();
 
-  $("#uploadBtn").addEventListener("click", pick);
-  urlInput.addEventListener("dblclick", pick);
+  const addUrl = () => {
+    const url = urlInput.value.trim();
+    if (!url) return;
+    refImages.push({ url, role: "reference_image" });
+    urlInput.value = "";
+    renderImgList();
+    toast(`Reference image added (${refImages.length} total).`);
+  };
+
+  $("#addUrlBtn").addEventListener("click", addUrl);
+  urlInput.addEventListener("keydown", (e) => {
+    if (e.key === "Enter") {
+      e.preventDefault();
+      addUrl();
+    }
+  });
+
+  $("#uploadBtn").addEventListener("click", () => fileInput.click());
 
   fileInput.addEventListener("change", () => {
-    const file = fileInput.files?.[0];
-    if (!file) return;
-    if (!/^image\//.test(file.type)) {
-      toast("Please choose an image file.");
-      return;
-    }
-    const reader = new FileReader();
-    reader.onload = () => {
-      urlInput.value = String(reader.result);
-      hint.textContent = `Loaded ${file.name} (${Math.round(file.size / 1024)} KB) as base64.`;
-      toast("Image ready — sent as base64.");
+    const files = Array.from(fileInput.files ?? []);
+    if (!files.length) return;
+    let pending = files.length;
+    const finish = () => {
+      renderImgList();
+      fileInput.value = "";
+      toast(`${refImages.length} reference image${refImages.length > 1 ? "s" : ""} attached.`);
     };
-    reader.onerror = () => toast("Could not read the image file.");
-    reader.readAsDataURL(file);
+    files.forEach((file) => {
+      if (!/^image\//.test(file.type)) {
+        toast(`${file.name} is not an image; skipped.`);
+        pending--;
+        if (pending === 0) finish();
+        return;
+      }
+      const reader = new FileReader();
+      reader.onload = () => {
+        refImages.push({ url: String(reader.result), role: "reference_image", name: file.name });
+        pending--;
+        if (pending === 0) finish();
+      };
+      reader.onerror = () => {
+        toast(`Could not read ${file.name}.`);
+        pending--;
+        if (pending === 0) finish();
+      };
+      reader.readAsDataURL(file);
+    });
   });
 
-  $("#clearImgBtn").addEventListener("click", () => {
-    urlInput.value = "";
-    fileInput.value = "";
-    hint.textContent = "Accepts URL or local image (sent as base64).";
-  });
+  renderImgList();
 }
 
 function init(): void {
