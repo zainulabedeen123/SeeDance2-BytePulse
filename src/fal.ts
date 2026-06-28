@@ -1,10 +1,10 @@
 /**
- * fal.ai integration for ByteDance Seedance 2.0.
+ * fal.ai integration for ByteDance Seedance 2.0 (full + Mini).
  *
- * Seedance 2.0 is exposed as three fal endpoints, chosen from the references:
- *   - bytedance/seedance-2.0/text-to-video      (no references)
- *   - bytedance/seedance-2.0/image-to-video      (1-2 frame images: first/end)
- *   - bytedance/seedance-2.0/reference-to-video  (reference images, up to 9)
+ * Each model exposes three endpoints, chosen from the references:
+ *   - text-to-video      (no references)
+ *   - image-to-video      (1-2 frame images: first/end)
+ *   - reference-to-video  (reference images, up to 9)
  *
  * NOTE: Like the BytePlus path, the fal key is used client-side here. For a
  * real deployment you should proxy through a backend so the key stays secret.
@@ -17,6 +17,15 @@ export interface FalRefImage {
   url: string;
   /** first_frame | last_frame | reference_image */
   role: string;
+}
+
+export interface FalModelConfig {
+  label: string;
+  /** URL prefix for the three endpoints, e.g. "bytedance/seedance-2.0" or "bytedance/seedance-2.0/mini" */
+  prefix: string;
+  /** Mini only supports 480p/720p and has no bitrate_mode */
+  supportsBitrate: boolean;
+  resolutions: readonly string[];
 }
 
 export interface FalParams {
@@ -32,40 +41,66 @@ export interface FalPlan {
   input: Record<string, unknown>;
 }
 
-const ENDPOINTS = {
-  text: "bytedance/seedance-2.0/text-to-video",
-  image: "bytedance/seedance-2.0/image-to-video",
-  reference: "bytedance/seedance-2.0/reference-to-video",
-} as const;
+/**
+ * Available fal.ai Seedance 2.0 models. Add new entries here to extend.
+ */
+export const FAL_MODELS: Record<string, FalModelConfig> = {
+  "seedance-2-0": {
+    label: "Seedance 2.0",
+    prefix: "bytedance/seedance-2.0",
+    supportsBitrate: true,
+    resolutions: ["480p", "720p", "1080p", "4k"],
+  },
+  "seedance-2-0-mini": {
+    label: "Seedance 2.0 Mini",
+    prefix: "bytedance/seedance-2.0/mini",
+    supportsBitrate: false,
+    resolutions: ["480p", "720p"],
+  },
+};
+
+function resolveModel(modelId: string): FalModelConfig {
+  return FAL_MODELS[modelId] ?? FAL_MODELS["seedance-2-0"];
+}
 
 /** Configure the fal client with an API key (call before any request). */
 export function configureFal(credentials: string): void {
   fal.config({ credentials });
 }
 
+export type FalEndpoint = "text" | "image" | "reference";
+
+function endpointFor(cfg: FalModelConfig, type: FalEndpoint): string {
+  return `${cfg.prefix}/${type === "text" ? "text-to-video" : type === "image" ? "image-to-video" : "reference-to-video"}`;
+}
+
 /**
- * Pick the Seedance 2.0 endpoint and assemble its input from the prompt,
- * references and shared parameters. Image roles drive the choice:
- *   - only first/last frames (<=2) -> image-to-video (start + optional end frame)
- *   - otherwise (any reference, or >2 images) -> reference-to-video
- *   - no images -> text-to-video
+ * Pick the correct Seedance 2.0 / Mini endpoint and assemble its input from
+ * the prompt, references and shared parameters. Image roles drive the choice:
+ *   - no images                              -> text-to-video
+ *   - only first/last frames (<=2)           -> image-to-video (start + optional end frame)
+ *   - any reference images, or >2 images     -> reference-to-video
  */
 export function planFalRequest(
   prompt: string,
   refs: FalRefImage[],
   p: FalParams,
+  modelId: string,
 ): FalPlan {
+  const cfg = resolveModel(modelId);
   const base: Record<string, unknown> = {
     prompt,
     resolution: p.resolution,
     duration: p.duration,
     aspect_ratio: p.aspect_ratio,
     generate_audio: p.generate_audio,
-    bitrate_mode: p.bitrate_mode,
   };
+  if (cfg.supportsBitrate) {
+    base.bitrate_mode = p.bitrate_mode;
+  }
 
   if (refs.length === 0) {
-    return { endpoint: ENDPOINTS.text, input: base };
+    return { endpoint: endpointFor(cfg, "text"), input: base };
   }
 
   const first = refs.find((r) => r.role === "first_frame");
@@ -80,11 +115,11 @@ export function planFalRequest(
       image_url: (first ?? refs[0]).url,
     };
     if (last) input.end_image_url = last.url;
-    return { endpoint: ENDPOINTS.image, input };
+    return { endpoint: endpointFor(cfg, "image"), input };
   }
 
   return {
-    endpoint: ENDPOINTS.reference,
+    endpoint: endpointFor(cfg, "reference"),
     input: { ...base, image_urls: refs.map((r) => r.url) },
   };
 }
@@ -96,8 +131,9 @@ export interface FalResult {
 }
 
 /**
- * Submit + wait for a fal Seedance 2.0 request via the queue, surfacing status
- * updates. Returns the video URL and fal request id on completion.
+ * Submit + wait for a fal Seedance 2.0 / Mini request via the queue,
+ * surfacing status updates. Returns the video URL and fal request id on
+ * completion.
  */
 export async function runFal(
   plan: FalPlan,
@@ -125,10 +161,8 @@ export async function runFal(
   return { requestId: result.requestId, videoUrl, seed: data.seed };
 }
 
-/** Human-friendly endpoint label for display. */
+/** Extract the endpoint suffix for display (e.g. "text-to-video"). */
 export function falEndpointLabel(endpoint: string): string {
-  if (endpoint === ENDPOINTS.text) return "text-to-video";
-  if (endpoint === ENDPOINTS.image) return "image-to-video";
-  if (endpoint === ENDPOINTS.reference) return "reference-to-video";
-  return endpoint;
+  const parts = endpoint.split("/");
+  return parts[parts.length - 1] ?? endpoint;
 }

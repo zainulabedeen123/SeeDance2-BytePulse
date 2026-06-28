@@ -14,6 +14,7 @@ import {
   planFalRequest,
   runFal,
   falEndpointLabel,
+  FAL_MODELS,
   type FalParams,
   type FalProvider,
 } from "./fal.ts";
@@ -47,10 +48,7 @@ const PROVIDERS: { id: FalProvider; label: string }[] = [
   { id: "fal", label: "fal.ai" },
 ];
 
-/** fal.ai models. Seedance 2.0 only for now; more can be added later. */
-const FAL_MODELS: { id: string; label: string }[] = [
-  { id: "seedance-2-0", label: "Seedance 2.0" },
-];
+/** fal.ai model list is defined in `src/fal.ts` (FAL_MODELS). */
 
 /**
  * BytePlus ModelArk bills Seedance by token, not by second (see ModelArk
@@ -195,7 +193,8 @@ function renderApp(): void {
         <label class="field grow" id="falModelBlock" hidden>
           <span>Model</span>
           <select id="falModel">
-            ${FAL_MODELS.map((m) => `<option value="${m.id}">${m.label}</option>`).join("")}
+            <option value="seedance-2-0">Seedance 2.0</option>
+            <option value="seedance-2-0-mini">Seedance 2.0 Mini</option>
           </select>
         </label>
       </div>
@@ -225,7 +224,7 @@ function renderApp(): void {
       </div>
 
       <div class="row" id="falOpts" hidden>
-        <label class="field">
+        <label class="field" id="bitrateField">
           <span>Bitrate mode</span>
           <select id="bitrateMode">
             <option value="standard">standard</option>
@@ -362,7 +361,20 @@ function applyProvider(provider: FalProvider): void {
   ($("#byteplusOpts") as HTMLElement).hidden = isFal;
   ($("#falOpts") as HTMLElement).hidden = !isFal;
 
-  const opts = PROVIDER_OPTS[provider];
+  let opts;
+  if (provider === "fal") {
+    const modelId = ($("#falModel") as HTMLSelectElement).value || "seedance-2-0";
+    const cfg = FAL_MODELS[modelId] ?? FAL_MODELS["seedance-2-0"];
+    opts = {
+      resolution: cfg.resolutions,
+      duration: ["auto", "4", "5", "6", "7", "8", "9", "10", "11", "12", "13", "14", "15"],
+      aspect: ["auto", "21:9", "16:9", "4:3", "1:1", "3:4", "9:16"],
+    };
+    ($("#bitrateField") as HTMLElement).hidden = !cfg.supportsBitrate;
+  } else {
+    opts = PROVIDER_OPTS["byteplus"];
+    ($("#bitrateField") as HTMLElement).hidden = true;
+  }
   setSelectOptions($("#resolution") as HTMLSelectElement, opts.resolution);
   setSelectOptions($("#duration") as HTMLSelectElement, opts.duration);
   setSelectOptions($("#aspectRatio") as HTMLSelectElement, opts.aspect);
@@ -569,8 +581,9 @@ async function generateFal(): Promise<void> {
     return;
   }
 
-  const plan = planFalRequest(prompt, refImages, buildFalParams());
-  const label = falEndpointLabel(plan.endpoint);
+  const falModelId = ($("#falModel") as HTMLSelectElement).value || "seedance-2-0";
+  const plan = planFalRequest(prompt, refImages, buildFalParams(), falModelId);
+  const label = `Seedance 2.0${falModelId === "seedance-2-0-mini" ? " Mini" : ""} · ${falEndpointLabel(plan.endpoint)}`;
   const btn = $("#generateBtn") as HTMLButtonElement;
   btn.disabled = true;
   const status = $("#genStatus");
@@ -580,7 +593,7 @@ async function generateFal(): Promise<void> {
   const stored: StoredTask = {
     id: `fal-${Date.now()}`,
     status: "queued",
-    model: `Seedance 2.0 · fal.ai (${label})`,
+    model: `${label} · fal.ai`,
     prompt,
     createdAt: Date.now(),
   };
@@ -853,9 +866,10 @@ function wireActions(): void {
     LS.model,
     ENV_MODEL || MODELS[0].id,
   );
-  ($("#falModel") as HTMLSelectElement).value = load(LS.falModel, FAL_MODELS[0].id);
+  ($("#falModel") as HTMLSelectElement).value = load(LS.falModel, "seedance-2-0");
   ($("#falModel") as HTMLSelectElement).addEventListener("change", (e) => {
     save(LS.falModel, (e.target as HTMLSelectElement).value);
+    if (getProvider() === "fal") applyProvider("fal");
   });
 
   const providerSel = $("#provider") as HTMLSelectElement;
